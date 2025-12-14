@@ -1,0 +1,233 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useCurrentAccount, useSignAndExecuteTransaction } from '@iota/dapp-kit';
+import { Transaction } from '@iota/iota-sdk/transactions';
+import TokenSelector from '../components/TokenSelector';
+import TokenInput from '../components/TokenInput';
+import { listCoin } from '@/lib/constant';
+import { getPools } from '@/lib/pools';
+
+type TokenOption = {
+  id: string;
+  symbol: string;
+  name?: string;
+  decimals?: number;
+  icon?: string;
+};
+
+export default function CreatePoolPage() {
+  const [tokens, setTokens] = useState<TokenOption[]>(
+    listCoin.map((coin) => ({
+      id: coin.tokenId,
+      symbol: coin.symbol,
+      name: coin.symbol,
+      decimals: coin.decimals,
+      icon: coin.icon,
+    }))
+  );
+
+  const [tokenA, setTokenA] = useState<TokenOption>(tokens[0]);
+  const [tokenB, setTokenB] = useState<TokenOption>(tokens[1] ?? tokens[0]);
+  const [initialAmountA, setInitialAmountA] = useState('');
+  const [initialAmountB, setInitialAmountB] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const account = useCurrentAccount();
+  const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
+
+  // Load pools/token list (fallback to static)
+  useEffect(() => {
+    getPools()
+      .then((coins) =>
+        setTokens(
+          coins.map((coin) => ({
+            id: coin.tokenId,
+            symbol: coin.symbol,
+            name: coin.symbol,
+            decimals: coin.decimals,
+            icon: coin.icon,
+          }))
+        )
+      )
+      .catch((err) => console.error('Failed to load pools, using fallback listCoin', err));
+  }, []);
+
+  const handleCreatePool = async () => {
+    if (!account || !initialAmountA || !initialAmountB) return;
+
+    setIsLoading(true);
+
+    try {
+      const transaction = new Transaction();
+
+      // This would be replaced with actual contract call
+      transaction.moveCall({
+        target: `${process.env.NEXT_PUBLIC_PACKAGE_ID}::simple_amm::create_pool`,
+        typeArguments: [tokenA.id, tokenB.id],
+        arguments: [],
+      });
+
+      signAndExecuteTransaction(
+        {
+          transaction,
+          account,
+        },
+        {
+          onSuccess: (result) => {
+            console.log('Pool creation successful:', result);
+            alert('Pool created successfully!');
+          },
+          onError: (error) => {
+            console.error('Pool creation failed:', error);
+            alert('Pool creation failed: ' + error.message);
+          },
+          onSettled: () => {
+            setIsLoading(false);
+          },
+        }
+      );
+    } catch (error) {
+      console.error('Error during pool creation:', error);
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      alert('Error during pool creation: ' + errorMessage);
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="relative isolate overflow-hidden rounded-3xl border border-[#2d1b14] bg-gradient-to-b from-[#130f0f] via-[#0b0a0a] to-[#0b0a0a] p-3">
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute -top-32 -left-10 h-64 w-64 rounded-full bg-gradient-to-br from-[#f6b394]/25 to-[#d1583e]/20 blur-3xl" />
+        <div className="absolute top-12 -right-24 h-72 w-72 rounded-full bg-gradient-to-br from-[#f6b394]/20 via-[#e77a55]/20 to-[#8a2d1b]/20 blur-3xl" />
+      </div>
+
+      <div className="grid gap-8 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          <div className="rounded-3xl border border-[#2d1b14] bg-[#14100f]/90 p-6 shadow-2xl shadow-black/40 backdrop-blur">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-[#f6b394]">Create Pool</p>
+                <h2 className="text-3xl font-bold text-[#fbe5d5]">Seed a New Pair</h2>
+                <p className="mt-2 text-[#e6d4c7]">
+                  Initialize liquidity for a fresh market and start earning fees from day one.
+                </p>
+              </div>
+              <div className="rounded-2xl bg-gradient-to-br from-[#f6b394] via-[#e77a55] to-[#8a2d1b] px-4 py-3 text-black shadow-lg shadow-[#f6b394]/30">
+                <p className="text-xs uppercase tracking-wide opacity-80">Protocol Fees</p>
+                <p className="text-lg font-semibold">0.30% | 20% to protocol</p>
+              </div>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {[
+                { label: 'Min Liquidity', value: 'Set your own' },
+                { label: 'Network', value: 'IOTA Testnet' },
+                { label: 'Outcome', value: 'LP shares minted' },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/90 px-4 py-3 shadow-sm shadow-black/30 backdrop-blur"
+                >
+                  <p className="text-xs uppercase tracking-wide text-[#f6b394]/80">{item.label}</p>
+                  <p className="text-lg font-semibold text-[#fbe5d5]">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-1">
+          <div className="space-y-6 rounded-3xl border border-[#2d1b14] bg-[#14100f]/90 p-6 shadow-2xl shadow-black/40 backdrop-blur">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-semibold text-[#fbe5d5]">Provide Initial Liquidity</h3>
+                <p className="text-sm text-[#e6d4c7]">Choose pair &amp; deposit amounts</p>
+              </div>
+              <div className="rounded-full border border-[#f6b394]/40 bg-[#f6b394]/15 px-3 py-1 text-xs font-semibold text-[#f6b394]">
+                Step 1
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
+              <TokenInput
+                value={initialAmountA}
+                onChange={setInitialAmountA}
+                title={`Token ${tokenA.symbol} Amount`}
+                balance="0.00"
+                onMaxClick={() => setInitialAmountA('100')}
+              />
+              <div className="mt-3">
+                <TokenSelector
+                  tokens={tokens.filter((token) => token.symbol !== tokenB.symbol)}
+                  selectedToken={tokenA}
+                  onSelectToken={setTokenA}
+                  title="Select Token A"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
+              <TokenInput
+                value={initialAmountB}
+                onChange={setInitialAmountB}
+                title={`Token ${tokenB.symbol} Amount`}
+                balance="0.00"
+                onMaxClick={() => setInitialAmountB('100')}
+              />
+              <div className="mt-3">
+                <TokenSelector
+                  tokens={tokens.filter((token) => token.symbol !== tokenA.symbol)}
+                  selectedToken={tokenB}
+                  onSelectToken={setTokenB}
+                  title="Select Token B"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
+              <h3 className="mb-2 text-sm font-medium text-[#fbe5d5]">Pool Information</h3>
+              <div className="space-y-2 text-sm text-[#e6d4c7]">
+                <div className="flex justify-between">
+                  <span>Pool Fee</span>
+                  <span>0.30%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Protocol Fee</span>
+                  <span>20% of swap fee</span>
+                </div>
+                <div className="flex justify-between border-t border-[#2d1b14] pt-2">
+                  <span>Initial Price</span>
+                  <span>
+                    {initialAmountA && initialAmountB
+                      ? `${(parseFloat(initialAmountB) / parseFloat(initialAmountA)).toFixed(6)} ${tokenB.symbol} / ${tokenA.symbol}`
+                      : 'Waiting for amounts'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleCreatePool}
+              disabled={!account || !initialAmountA || !initialAmountB || isLoading}
+              className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
+                !account || !initialAmountA || !initialAmountB || isLoading
+                  ? 'bg-gray-300 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
+              }`}
+            >
+              {isLoading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="h-5 w-5 animate-spin text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Creating Pool...
+                </span>
+              ) : !account ? 'Connect Wallet' : 'Create Pool'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
