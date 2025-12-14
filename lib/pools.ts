@@ -100,7 +100,8 @@ function parsePool(entry: PoolFields): PoolModel | null {
   const token0 = bytesFieldToString(entry.token0);
   const token1 = bytesFieldToString(entry.token1);
   const poolId = (entry.pool_id as string | undefined) ?? '';
-  if (!token0 || !token1 || !poolId) return null;
+  // Require full type tag (must contain ::) to avoid invalid type args
+  if (!token0 || !token1 || !poolId || !token0.includes('::') || !token1.includes('::')) return null;
 
   return {
     poolId,

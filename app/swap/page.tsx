@@ -2,15 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useCurrentAccount, useIotaClient, useSignAndExecuteTransaction } from '@iota/dapp-kit';
-import { Transaction } from '@iota/iota-sdk/transactions';
+import { useRouter } from 'next/navigation';
+import { Transaction, coinWithBalance } from '@iota/iota-sdk/transactions';
 import TokenSelector from '../components/TokenSelector';
 import TokenInput from '../components/TokenInput';
 import { listCoin } from '@/lib/constant';
 import { deriveTokensFromPools, getPools, hydratePoolsWithData, PoolWithOnChain } from '@/lib/pools';
 
 const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID ?? '';
-const DEFAULT_COIN_OBJECT = process.env.NEXT_PUBLIC_DEFAULT_COIN_OBJECT_ID ?? '';
-const PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
+const NEXT_PUBLIC_PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
 
 type TokenOption = {
   id: string;
@@ -43,11 +43,11 @@ export default function SwapPage() {
   const [fromAmount, setFromAmount] = useState('');
   const [toAmount, setToAmount] = useState('');
   const [slippage, setSlippage] = useState('0.5');
-  const [coinObjectId, setCoinObjectId] = useState(DEFAULT_COIN_OBJECT);
   const [isSwapping, setIsSwapping] = useState(false);
 
   const account = useCurrentAccount();
   const iotaClient = useIotaClient();
+  const router = useRouter();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
 
   const activePool = useMemo(() => {
@@ -140,11 +140,6 @@ export default function SwapPage() {
       return;
     }
 
-    if (!coinObjectId) {
-      alert('Masukkan Coin Object ID untuk token input.');
-      return;
-    }
-
     const amountInBase = toBaseUnits(fromAmount, fromToken.decimals ?? 0);
     const estOut = toAmount || calculateOutput() || '0';
     const outBase = toBaseUnits(estOut, toToken.decimals ?? 0);
@@ -155,11 +150,19 @@ export default function SwapPage() {
 
     try {
       const transaction = new Transaction();
-      const [coinIn] = transaction.splitCoins(transaction.object(coinObjectId), [transaction.pure.u64(amountInBase)]);
+      transaction.setSenderIfNotSet(account.address);
       const swapFn = activePool.reversed ? 'swap_b_to_a' : 'swap_a_to_b';
 
+      const coinIn = transaction.add(
+        coinWithBalance({
+          type: activePool.reversed ? activePool.pool.tokenB.tokenId : activePool.pool.tokenA.tokenId,
+          balance: BigInt(amountInBase),
+          useGasCoin: false,
+        })
+      );
+
       transaction.moveCall({
-        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::${swapFn}`,
+        target: `${NEXT_PUBLIC_PACKAGE_ID}::simple_amm_sandbox_fee::${swapFn}`,
         typeArguments: [activePool.pool.tokenA.tokenId, activePool.pool.tokenB.tokenId],
         arguments: [
           transaction.object(REGISTRY_ID),
@@ -174,6 +177,7 @@ export default function SwapPage() {
         {
           onSuccess: (result) => {
             console.log('Swap successful:', result);
+            router.refresh();
             alert('Swap completed successfully!');
           },
           onError: (error) => {
@@ -297,15 +301,6 @@ export default function SwapPage() {
                   selectedToken={fromToken}
                   onSelectToken={setFromToken}
                   title="Select From Token"
-                />
-              </div>
-              <div className="mt-3">
-                <label className="mb-1 block text-xs font-medium text-[#fbe5d5]">Coin Object ID (token in)</label>
-                <input
-                  value={coinObjectId}
-                  onChange={(e) => setCoinObjectId(e.target.value)}
-                  placeholder="0x..."
-                  className="w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-xs text-[#fbe5d5] shadow-inner shadow-black/30 focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
                 />
               </div>
             </div>

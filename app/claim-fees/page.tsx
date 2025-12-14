@@ -6,7 +6,7 @@ import { Transaction } from '@iota/iota-sdk/transactions';
 import { deriveTokensFromPools, getPools, hydratePoolsWithData, PoolWithOnChain } from '@/lib/pools';
 
 const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID ?? '';
-const PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
+const NEXT_PUBLIC_PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
 
 function toBaseUnits(value: string, decimals = 0): number {
   const parsed = parseFloat(value || '0');
@@ -64,7 +64,7 @@ export default function ClaimFeesPage() {
       const minBBase = toBaseUnits(minB || '0', tokenB?.decimals ?? 0);
 
       transaction.moveCall({
-        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::claim_protocol_fees`,
+        target: `${NEXT_PUBLIC_PACKAGE_ID}::simple_amm_sandbox_fee::claim_protocol_fees`,
         typeArguments: [activePool.tokenA.tokenId, activePool.tokenB.tokenId],
         arguments: [
           transaction.object(REGISTRY_ID),

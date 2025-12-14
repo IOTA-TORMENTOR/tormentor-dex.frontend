@@ -56,7 +56,7 @@ Located in the `contract/` directory:
 Create a `.env.local` file in the root directory with the following variables:
 
 ```env
-NEXT_PUBLIC_PACKAGE_ID=your_move_package_id
+NEXT_PUBLIC_PACKAGE_ID=your_move_NEXT_PUBLIC_PACKAGE_ID
 NEXT_PUBLIC_IOTA_PROVIDER_URL=https://api.lb-aws.iotaledger.net
 ```
 

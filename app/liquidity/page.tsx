@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useCurrentAccount, useIotaClient, useSignAndExecuteTransaction } from '@iota/dapp-kit';
-import { Transaction } from '@iota/iota-sdk/transactions';
+import { Transaction, coinWithBalance } from '@iota/iota-sdk/transactions';
+import { useRouter } from 'next/navigation';
 import TokenSelector from '../components/TokenSelector';
 import TokenInput from '../components/TokenInput';
 import { listCoin } from '@/lib/constant';
@@ -17,7 +18,7 @@ type TokenOption = {
 };
 
 const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID ?? '';
-const PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
+const NEXT_PUBLIC_PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
 const DEFAULT_COIN_A_OBJECT = process.env.NEXT_PUBLIC_DEFAULT_COIN_A_OBJECT_ID ?? '';
 const DEFAULT_COIN_B_OBJECT = process.env.NEXT_PUBLIC_DEFAULT_COIN_B_OBJECT_ID ?? '';
 const DEFAULT_POSITION_ID = process.env.NEXT_PUBLIC_POSITION_ID ?? '';
@@ -55,9 +56,11 @@ export default function LiquidityPage() {
   const [minB, setMinB] = useState('');
   const [positionId, setPositionId] = useState(DEFAULT_POSITION_ID);
   const [isLoading, setIsLoading] = useState(false);
+  const [autoLoadingCoins, setAutoLoadingCoins] = useState(false);
 
   const account = useCurrentAccount();
   const iotaClient = useIotaClient();
+  const router = useRouter();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
 
   const activePool = useMemo(() => {
@@ -107,33 +110,103 @@ export default function LiquidityPage() {
     setTokenB((prev) => tokens.find((t) => t.id === prev?.id) ?? tokens[1] ?? tokens[0]);
   }, [tokens]);
 
-  const handleAddLiquidity = async () => {
+  // Auto-pick the first owned coin object for the selected types (if available)
+  useEffect(() => {
+    const owner = account?.address;
+    if (!owner || !iotaClient) return;
+
+    let cancelled = false;
+    const loadCoinObjects = async () => {
+      setAutoLoadingCoins(true);
+      try {
+        const fetchCoinObject = async (typeTag: string) => {
+          if (!typeTag || !typeTag.includes('::')) return undefined;
+          // Prefer getCoins to ensure matching coin type
+          try {
+            const coins = await iotaClient.getCoins({ owner, coinType: typeTag, limit: 50 });
+            const hit = coins.data?.[0]?.coinObjectId;
+            if (hit) return hit;
+          } catch (e) {
+            console.warn('getCoins failed, fallback to owned scan', e);
+          }
+
+          // Fallback: scan owned objects by type
+          try {
+            const ownedAny = await iotaClient.getOwnedObjects({
+              owner,
+              options: { showType: true, showContent: true },
+              limit: 50,
+            });
+            const match = ownedAny.data?.find((item: any) => item?.data?.type === typeTag);
+            return match?.data?.objectId as string | undefined;
+          } catch (e) {
+            console.error('Owned objects scan failed', e);
+            return undefined;
+          }
+        };
+
+        const [aObj, bObj] = await Promise.all([fetchCoinObject(tokenA.id), fetchCoinObject(tokenB.id)]);
+        if (cancelled) return;
+        if (aObj) setCoinAId(aObj);
+        if (bObj) setCoinBId(bObj);
+      } catch (err) {
+        console.error('Failed to fetch coin object from wallet; keep manual input', err);
+      } finally {
+        if (!cancelled) setAutoLoadingCoins(false);
+      }
+    };
+
+    loadCoinObjects();
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.address, iotaClient, tokenA.id, tokenB.id]);
+
+const handleAddLiquidity = async () => {
     if (!account || !amountA || !amountB || !activePool?.pool) return;
     if (!REGISTRY_ID) {
       alert('Set NEXT_PUBLIC_REGISTRY_ID in env');
       return;
     }
-    if (!coinAId || !coinBId) {
-      alert('Isi Coin Object ID untuk kedua token.');
-      return;
-    }
+    const pool = activePool.pool;
+    const callTokenA = pool.tokenA;
+    const callTokenB = pool.tokenB;
+    const inputAmountA = activePool.reversed ? amountB : amountA;
+    const inputAmountB = activePool.reversed ? amountA : amountB;
+    const decA = callTokenA.decimals ?? 0;
+    const decB = callTokenB.decimals ?? 0;
 
-    const amountABase = toBaseUnits(amountA, tokenA.decimals ?? 0);
-    const amountBBase = toBaseUnits(amountB, tokenB.decimals ?? 0);
+    const amountABase = toBaseUnits(inputAmountA, decA);
+    const amountBBase = toBaseUnits(inputAmountB, decB);
 
     setIsLoading(true);
 
+    console.log('POOL ID:', activePool.pool.poolId);
+
     try {
       const transaction = new Transaction();
-      const [coinAInput] = transaction.splitCoins(transaction.object(coinAId), [transaction.pure.u64(amountABase)]);
-      const [coinBInput] = transaction.splitCoins(transaction.object(coinBId), [transaction.pure.u64(amountBBase)]);
+      transaction.setSenderIfNotSet(account.address);
+      const [coinAInput] = transaction.add(
+        coinWithBalance({
+          type: callTokenA.tokenId,
+          balance: BigInt(amountABase),
+          useGasCoin: false,
+        })
+      );
+      const [coinBInput] = transaction.add(
+        coinWithBalance({
+          type: callTokenB.tokenId,
+          balance: BigInt(amountBBase),
+          useGasCoin: false,
+        })
+      );
 
       transaction.moveCall({
-        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::add_liquidity`,
-        typeArguments: [activePool.pool.tokenA.tokenId, activePool.pool.tokenB.tokenId],
+        target: `${NEXT_PUBLIC_PACKAGE_ID}::simple_amm_sandbox_fee::add_liquidity`,
+        typeArguments: [callTokenA.tokenId, callTokenB.tokenId],
         arguments: [
           transaction.object(REGISTRY_ID),
-          transaction.object(activePool.pool.poolId),
+          transaction.object(pool.poolId),
           coinAInput,
           transaction.pure.u64(amountABase),
           coinBInput,
@@ -149,6 +222,7 @@ export default function LiquidityPage() {
         {
           onSuccess: (result) => {
             console.log('Add liquidity successful:', result);
+            router.refresh();
             alert('Liquidity added successfully!');
           },
           onError: (error) => {
@@ -180,20 +254,24 @@ export default function LiquidityPage() {
     }
 
     const shares = parseInt(sharesToBurn, 10);
-    const minABase = toBaseUnits(minA || '0', tokenA.decimals ?? 0);
-    const minBBase = toBaseUnits(minB || '0', tokenB.decimals ?? 0);
+    const pool = activePool.pool;
+    const callTokenA = pool.tokenA;
+    const callTokenB = pool.tokenB;
+    const minABase = toBaseUnits(activePool.reversed ? minB || '0' : minA || '0', callTokenA.decimals ?? 0);
+    const minBBase = toBaseUnits(activePool.reversed ? minA || '0' : minB || '0', callTokenB.decimals ?? 0);
 
     setIsLoading(true);
 
     try {
       const transaction = new Transaction();
+      transaction.setSenderIfNotSet(account.address);
 
       transaction.moveCall({
-        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::remove_liquidity_partial`,
-        typeArguments: [activePool.pool.tokenA.tokenId, activePool.pool.tokenB.tokenId],
+        target: `${NEXT_PUBLIC_PACKAGE_ID}::simple_amm_sandbox_fee::remove_liquidity_partial`,
+        typeArguments: [callTokenA.tokenId, callTokenB.tokenId],
         arguments: [
           transaction.object(REGISTRY_ID),
-          transaction.object(activePool.pool.poolId),
+          transaction.object(pool.poolId),
           transaction.object(positionId),
           transaction.pure.u64(shares),
           transaction.pure.u64(minABase),
@@ -299,23 +377,21 @@ export default function LiquidityPage() {
                 <p className="text-sm text-[#e6d4c7]">Deposit or withdraw shares</p>
               </div>
               <div className="rounded-full border border-[#f6b394]/40 bg-[#f6b394]/15 px-3 py-1 text-xs font-semibold text-[#f6b394]">
-                {loadingPools ? 'Syncing pools' : 'Pools'}
+                {loadingPools ? 'Syncing pools' : autoLoadingCoins ? 'Loading coins' : 'Pools'}
               </div>
             </div>
 
             <div className="flex rounded-xl border border-[#2d1b14] bg-[#1a1412] p-1">
               <button
-                className={`flex-1 rounded-lg py-2 text-center font-medium transition ${
-                  activeTab === 'add' ? 'bg-[#0f0d0d] text-[#f6b394] shadow' : 'text-[#e6d4c7]'
-                }`}
+                className={`flex-1 rounded-lg py-2 text-center font-medium transition ${activeTab === 'add' ? 'bg-[#0f0d0d] text-[#f6b394] shadow' : 'text-[#e6d4c7]'
+                  }`}
                 onClick={() => setActiveTab('add')}
               >
                 Add
               </button>
               <button
-                className={`flex-1 rounded-lg py-2 text-center font-medium transition ${
-                  activeTab === 'remove' ? 'bg-[#0f0d0d] text-[#f6b394] shadow' : 'text-[#e6d4c7]'
-                }`}
+                className={`flex-1 rounded-lg py-2 text-center font-medium transition ${activeTab === 'remove' ? 'bg-[#0f0d0d] text-[#f6b394] shadow' : 'text-[#e6d4c7]'
+                  }`}
                 onClick={() => setActiveTab('remove')}
               >
                 Remove
@@ -340,7 +416,7 @@ export default function LiquidityPage() {
                       title="Select Token A"
                     />
                   </div>
-                  <div className="mt-3">
+                  {/* <div className="mt-3">
                     <label className="mb-1 block text-xs font-medium text-[#fbe5d5]">Coin Object ID (Token A)</label>
                     <input
                       value={coinAId}
@@ -348,7 +424,7 @@ export default function LiquidityPage() {
                       placeholder="0x..."
                       className="w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-xs text-[#fbe5d5] shadow-inner shadow-black/30 focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
                     />
-                  </div>
+                  </div> */}
                 </div>
 
                 <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
@@ -367,7 +443,7 @@ export default function LiquidityPage() {
                       title="Select Token B"
                     />
                   </div>
-                  <div className="mt-3">
+                  {/* <div className="mt-3">
                     <label className="mb-1 block text-xs font-medium text-[#fbe5d5]">Coin Object ID (Token B)</label>
                     <input
                       value={coinBId}
@@ -375,7 +451,7 @@ export default function LiquidityPage() {
                       placeholder="0x..."
                       className="w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-xs text-[#fbe5d5] shadow-inner shadow-black/30 focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
                     />
-                  </div>
+                  </div> */}
                 </div>
 
                 <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
@@ -413,11 +489,10 @@ export default function LiquidityPage() {
                 <button
                   onClick={handleAddLiquidity}
                   disabled={!account || !amountA || !amountB || isLoading || !activePool}
-                  className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
-                    !account || !amountA || !amountB || isLoading || !activePool
-                      ? 'bg-gray-300 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
-                  }`}
+                  className={`w-full rounded-xl py-3 font-medium text-white transition-all ${!account || !amountA || !amountB || isLoading || !activePool
+                    ? 'bg-gray-300 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
+                    }`}
                 >
                   {isLoading ? (
                     <span className="flex items-center justify-center gap-2">
@@ -497,11 +572,10 @@ export default function LiquidityPage() {
                 <button
                   onClick={handleRemoveLiquidity}
                   disabled={!account || !sharesToBurn || isLoading || !activePool}
-                  className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
-                    !account || !sharesToBurn || isLoading || !activePool
-                      ? 'bg-gray-300 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
-                  }`}
+                  className={`w-full rounded-xl py-3 font-medium text-white transition-all ${!account || !sharesToBurn || isLoading || !activePool
+                    ? 'bg-gray-300 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
+                    }`}
                 >
                   {isLoading ? (
                     <span className="flex items-center justify-center gap-2">

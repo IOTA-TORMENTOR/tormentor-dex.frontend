@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useCurrentAccount, useIotaClient, useSignAndExecuteTransaction } from '@iota/dapp-kit';
 import { Transaction } from '@iota/iota-sdk/transactions';
 import TokenSelector from '../components/TokenSelector';
-import TokenInput from '../components/TokenInput';
 import { listCoin } from '@/lib/constant';
 import { deriveTokensFromPools, getPools, hydratePoolsWithData } from '@/lib/pools';
 
@@ -36,8 +35,6 @@ export default function CreatePoolPage() {
 
   const [tokenA, setTokenA] = useState<TokenOption>(tokens[0]);
   const [tokenB, setTokenB] = useState<TokenOption>(tokens[1] ?? tokens[0]);
-  const [initialAmountA, setInitialAmountA] = useState('');
-  const [initialAmountB, setInitialAmountB] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   const account = useCurrentAccount();
@@ -114,7 +111,7 @@ export default function CreatePoolPage() {
         {
           onSuccess: (result) => {
             console.log('Pool creation successful:', result);
-            alert('Pool created successfully!');
+            alert('Pool created successfully! Tambahkan likuiditas di menu Liquidity.');
           },
           onError: (error) => {
             console.error('Pool creation failed:', error);
@@ -148,7 +145,7 @@ export default function CreatePoolPage() {
                 <p className="text-sm font-semibold uppercase tracking-wide text-[#f6b394]">Create Pool</p>
                 <h2 className="text-3xl font-bold text-[#fbe5d5]">Seed a New Pair</h2>
                 <p className="mt-2 text-[#e6d4c7]">
-                  Initialize liquidity for a fresh market and start earning fees from day one.
+                  Daftarkan pasangan token ke registry. Setoran awal dilakukan lewat halaman Liquidity.
                 </p>
               </div>
               <div className="rounded-2xl bg-gradient-to-br from-[#f6b394] via-[#e77a55] to-[#8a2d1b] px-4 py-3 text-black shadow-lg shadow-[#f6b394]/30">
@@ -160,9 +157,9 @@ export default function CreatePoolPage() {
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
               {[
-                { label: 'Min Liquidity', value: 'Set your own' },
+                { label: 'Deposit', value: 'Not required here' },
                 { label: 'Network', value: 'IOTA Testnet' },
-                { label: 'Outcome', value: 'LP shares minted' },
+                { label: 'Outcome', value: 'Pool + LP supply = 0' },
               ].map((item) => (
                 <div
                   key={item.label}
@@ -180,48 +177,30 @@ export default function CreatePoolPage() {
           <div className="space-y-6 rounded-3xl border border-[#2d1b14] bg-[#14100f]/90 p-6 shadow-2xl shadow-black/40 backdrop-blur">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-xl font-semibold text-[#fbe5d5]">Provide Initial Liquidity</h3>
-                <p className="text-sm text-[#e6d4c7]">Choose pair &amp; deposit amounts</p>
+                <h3 className="text-xl font-semibold text-[#fbe5d5]">Select Pair Only</h3>
+                <p className="text-sm text-[#e6d4c7]">Tidak ada form amount di tahap ini.</p>
               </div>
               <div className="rounded-full border border-[#f6b394]/40 bg-[#f6b394]/15 px-3 py-1 text-xs font-semibold text-[#f6b394]">
-                Step 1
+                Step
               </div>
             </div>
 
             <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
-              <TokenInput
-                value={initialAmountA}
-                onChange={setInitialAmountA}
-                title={`Token ${tokenA.symbol} Amount`}
-                balance="0.00"
-                onMaxClick={() => setInitialAmountA('100')}
+              <TokenSelector
+                tokens={tokens.filter((token) => token.symbol !== tokenB.symbol)}
+                selectedToken={tokenA}
+                onSelectToken={setTokenA}
+                title="Select Token A"
               />
-              <div className="mt-3">
-                <TokenSelector
-                  tokens={tokens.filter((token) => token.symbol !== tokenB.symbol)}
-                  selectedToken={tokenA}
-                  onSelectToken={setTokenA}
-                  title="Select Token A"
-                />
-              </div>
             </div>
 
             <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
-              <TokenInput
-                value={initialAmountB}
-                onChange={setInitialAmountB}
-                title={`Token ${tokenB.symbol} Amount`}
-                balance="0.00"
-                onMaxClick={() => setInitialAmountB('100')}
+              <TokenSelector
+                tokens={tokens.filter((token) => token.symbol !== tokenA.symbol)}
+                selectedToken={tokenB}
+                onSelectToken={setTokenB}
+                title="Select Token B"
               />
-              <div className="mt-3">
-                <TokenSelector
-                  tokens={tokens.filter((token) => token.symbol !== tokenA.symbol)}
-                  selectedToken={tokenB}
-                  onSelectToken={setTokenB}
-                  title="Select Token B"
-                />
-              </div>
             </div>
 
             <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
@@ -235,23 +214,16 @@ export default function CreatePoolPage() {
                   <span>Protocol Fee</span>
                   <span>20% of swap fee</span>
                 </div>
-                <div className="flex justify-between border-t border-[#2d1b14] pt-2">
-                  <span>Initial Price</span>
-                  <span>
-                    {initialAmountA && initialAmountB
-                      ? `${(parseFloat(initialAmountB) / parseFloat(initialAmountA || '1')).toFixed(6)} ${tokenB.symbol} / ${tokenA.symbol}`
-                      : 'Waiting for amounts'}
-                  </span>
-                </div>
+                <p className="text-xs text-[#e6d4c7]">Setoran awal dilakukan setelah pool terbentuk di halaman Liquidity.</p>
                 {hasSameToken && <p className="text-xs text-red-300">Token A dan B harus berbeda.</p>}
               </div>
             </div>
 
             <button
               onClick={handleCreatePool}
-              disabled={!account || !initialAmountA || !initialAmountB || isLoading || hasSameToken}
+              disabled={!account || isLoading || hasSameToken}
               className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
-                !account || !initialAmountA || !initialAmountB || isLoading || hasSameToken
+                !account || isLoading || hasSameToken
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
               }`}
