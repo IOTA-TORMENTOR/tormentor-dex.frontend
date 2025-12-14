@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useCurrentAccount, useSignAndExecuteTransaction } from '@iota/dapp-kit';
+import { useEffect, useMemo, useState } from 'react';
+import { useCurrentAccount, useIotaClient, useSignAndExecuteTransaction } from '@iota/dapp-kit';
 import { Transaction } from '@iota/iota-sdk/transactions';
 import TokenSelector from '../components/TokenSelector';
 import TokenInput from '../components/TokenInput';
 import { listCoin } from '@/lib/constant';
-import { getPools } from '@/lib/pools';
+import { deriveTokensFromPools, getPools, hydratePoolsWithData, PoolWithOnChain } from '@/lib/pools';
 
 type TokenOption = {
   id: string;
@@ -15,6 +15,18 @@ type TokenOption = {
   decimals?: number;
   icon?: string;
 };
+
+const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID ?? '';
+const PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
+const DEFAULT_COIN_A_OBJECT = process.env.NEXT_PUBLIC_DEFAULT_COIN_A_OBJECT_ID ?? '';
+const DEFAULT_COIN_B_OBJECT = process.env.NEXT_PUBLIC_DEFAULT_COIN_B_OBJECT_ID ?? '';
+const DEFAULT_POSITION_ID = process.env.NEXT_PUBLIC_POSITION_ID ?? '';
+
+function toBaseUnits(value: string, decimals = 0): number {
+  const parsed = parseFloat(value || '0');
+  if (Number.isNaN(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed * 10 ** decimals);
+}
 
 export default function LiquidityPage() {
   const [tokens, setTokens] = useState<TokenOption[]>(
@@ -29,52 +41,103 @@ export default function LiquidityPage() {
 
   const [tokenA, setTokenA] = useState<TokenOption>(tokens[0]);
   const [tokenB, setTokenB] = useState<TokenOption>(tokens[1] ?? tokens[0]);
+  const [pools, setPools] = useState<PoolWithOnChain[]>([]);
+  const [loadingPools, setLoadingPools] = useState(false);
+
   const [amountA, setAmountA] = useState('');
   const [amountB, setAmountB] = useState('');
-  const [activeTab, setActiveTab] = useState<'add' | 'remove'>('add'); // Add/remove liquidity tabs
+  const [coinAId, setCoinAId] = useState(DEFAULT_COIN_A_OBJECT);
+  const [coinBId, setCoinBId] = useState(DEFAULT_COIN_B_OBJECT);
+
+  const [activeTab, setActiveTab] = useState<'add' | 'remove'>('add');
   const [sharesToBurn, setSharesToBurn] = useState('');
   const [minA, setMinA] = useState('');
   const [minB, setMinB] = useState('');
+  const [positionId, setPositionId] = useState(DEFAULT_POSITION_ID);
   const [isLoading, setIsLoading] = useState(false);
 
   const account = useCurrentAccount();
+  const iotaClient = useIotaClient();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
+
+  const activePool = useMemo(() => {
+    const direct = pools.find((pool) => pool.tokenA.tokenId === tokenA.id && pool.tokenB.tokenId === tokenB.id);
+    if (direct) return { pool: direct, reversed: false } as const;
+    const reversed = pools.find((pool) => pool.tokenA.tokenId === tokenB.id && pool.tokenB.tokenId === tokenA.id);
+    if (reversed) return { pool: reversed, reversed: true } as const;
+    return null;
+  }, [pools, tokenA.id, tokenB.id]);
 
   // Load pools/token list (fallback to static)
   useEffect(() => {
-    getPools()
-      .then((coins) =>
+    let mounted = true;
+    const loadPools = async () => {
+      setLoadingPools(true);
+      try {
+        const poolMeta = await getPools(iotaClient, REGISTRY_ID);
+        const hydrated = await hydratePoolsWithData(iotaClient, poolMeta);
+        if (!mounted) return;
+        setPools(hydrated);
+        const derived = deriveTokensFromPools(hydrated);
         setTokens(
-          coins.map((coin) => ({
+          derived.map((coin) => ({
             id: coin.tokenId,
             symbol: coin.symbol,
             name: coin.symbol,
             decimals: coin.decimals,
             icon: coin.icon,
           }))
-        )
-      )
-      .catch((err) => console.error('Failed to load pools, using fallback listCoin', err));
-  }, []);
+        );
+      } catch (err) {
+        console.error('Failed to load pools, using fallback listCoin', err);
+      } finally {
+        if (mounted) setLoadingPools(false);
+      }
+    };
+
+    loadPools();
+    return () => {
+      mounted = false;
+    };
+  }, [iotaClient]);
+
+  useEffect(() => {
+    if (!tokens.length) return;
+    setTokenA((prev) => tokens.find((t) => t.id === prev?.id) ?? tokens[0]);
+    setTokenB((prev) => tokens.find((t) => t.id === prev?.id) ?? tokens[1] ?? tokens[0]);
+  }, [tokens]);
 
   const handleAddLiquidity = async () => {
-    if (!account || !amountA || !amountB) return;
+    if (!account || !amountA || !amountB || !activePool?.pool) return;
+    if (!REGISTRY_ID) {
+      alert('Set NEXT_PUBLIC_REGISTRY_ID in env');
+      return;
+    }
+    if (!coinAId || !coinBId) {
+      alert('Isi Coin Object ID untuk kedua token.');
+      return;
+    }
+
+    const amountABase = toBaseUnits(amountA, tokenA.decimals ?? 0);
+    const amountBBase = toBaseUnits(amountB, tokenB.decimals ?? 0);
 
     setIsLoading(true);
 
     try {
       const transaction = new Transaction();
+      const [coinAInput] = transaction.splitCoins(transaction.object(coinAId), [transaction.pure.u64(amountABase)]);
+      const [coinBInput] = transaction.splitCoins(transaction.object(coinBId), [transaction.pure.u64(amountBBase)]);
 
-      // This would be replaced with actual contract call
       transaction.moveCall({
-        target: `${process.env.NEXT_PUBLIC_PACKAGE_ID}::simple_amm::add_liquidity_partial`,
-        typeArguments: [tokenA.id, tokenB.id],
+        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::add_liquidity`,
+        typeArguments: [activePool.pool.tokenA.tokenId, activePool.pool.tokenB.tokenId],
         arguments: [
-          transaction.object('0x123'), // pool object ID - needs to be fetched
-          transaction.pure.u64(parseInt(amountA)),
-          transaction.pure.u64(parseInt(amountB)),
-          transaction.pure.u64(Math.floor(parseFloat(amountA) * 0.999)), // min amount A
-          transaction.pure.u64(Math.floor(parseFloat(amountB) * 0.999)), // min amount B
+          transaction.object(REGISTRY_ID),
+          transaction.object(activePool.pool.poolId),
+          coinAInput,
+          transaction.pure.u64(amountABase),
+          coinBInput,
+          transaction.pure.u64(amountBBase),
         ],
       });
 
@@ -106,23 +169,35 @@ export default function LiquidityPage() {
   };
 
   const handleRemoveLiquidity = async () => {
-    if (!account || !sharesToBurn) return;
+    if (!account || !sharesToBurn || !activePool?.pool) return;
+    if (!REGISTRY_ID) {
+      alert('Set NEXT_PUBLIC_REGISTRY_ID in env');
+      return;
+    }
+    if (!positionId) {
+      alert('Isi Position ID untuk burn shares.');
+      return;
+    }
+
+    const shares = parseInt(sharesToBurn, 10);
+    const minABase = toBaseUnits(minA || '0', tokenA.decimals ?? 0);
+    const minBBase = toBaseUnits(minB || '0', tokenB.decimals ?? 0);
 
     setIsLoading(true);
 
     try {
       const transaction = new Transaction();
 
-      // This would be replaced with actual contract call
       transaction.moveCall({
-        target: `${process.env.NEXT_PUBLIC_PACKAGE_ID}::simple_amm::remove_liquidity_partial`,
-        typeArguments: [tokenA.id, tokenB.id],
+        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::remove_liquidity_partial`,
+        typeArguments: [activePool.pool.tokenA.tokenId, activePool.pool.tokenB.tokenId],
         arguments: [
-          transaction.object('0x123'), // pool object ID - needs to be fetched
-          transaction.object('0x456'), // position object ID - needs to be fetched
-          transaction.pure.u64(parseInt(sharesToBurn)),
-          transaction.pure.u64(parseInt(minA || '0')),
-          transaction.pure.u64(parseInt(minB || '0')),
+          transaction.object(REGISTRY_ID),
+          transaction.object(activePool.pool.poolId),
+          transaction.object(positionId),
+          transaction.pure.u64(shares),
+          transaction.pure.u64(minABase),
+          transaction.pure.u64(minBBase),
         ],
       });
 
@@ -153,6 +228,8 @@ export default function LiquidityPage() {
     }
   };
 
+  const poolStats = activePool?.pool;
+
   return (
     <div className="relative isolate overflow-hidden rounded-3xl border border-[#2d1b14] bg-gradient-to-b from-[#130f0f] via-[#0b0a0a] to-[#0b0a0a] p-3">
       <div className="pointer-events-none absolute inset-0 -z-10">
@@ -172,13 +249,15 @@ export default function LiquidityPage() {
                 </p>
               </div>
               <div className="rounded-2xl bg-gradient-to-br from-[#f6b394] via-[#e77a55] to-[#8a2d1b] px-4 py-3 text-black shadow-lg shadow-[#f6b394]/30">
-                <p className="text-xs uppercase tracking-wide opacity-80">Pool Fees</p>
-                <p className="text-lg font-semibold">0.30% | 20% protocol</p>
+                <p className="text-xs uppercase tracking-wide opacity-80">Registry</p>
+                <p className="text-sm font-semibold truncate max-w-[220px]" title={REGISTRY_ID || 'Not configured'}>
+                  {REGISTRY_ID || 'Not set'}
+                </p>
               </div>
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
               {[
-                { label: 'TVL', value: '$0.00' },
+                { label: 'TVL', value: poolStats ? `${poolStats.reserveA?.toFixed(4) ?? 0} ${poolStats.tokenA.symbol}` : '$0.00' },
                 { label: 'Your Share', value: '0.00%' },
                 { label: 'Network', value: 'IOTA Testnet' },
               ].map((item) => (
@@ -191,6 +270,24 @@ export default function LiquidityPage() {
                 </div>
               ))}
             </div>
+            {poolStats && (
+              <div className="mt-4 grid gap-3 rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20 sm:grid-cols-2">
+                <div className="space-y-1 text-sm text-[#e6d4c7]">
+                  <p className="text-xs uppercase tracking-wide text-[#f6b394]/80">Pool</p>
+                  <p className="font-semibold text-[#fbe5d5]">{poolStats.tokenA.symbol} / {poolStats.tokenB.symbol}</p>
+                  <p className="font-mono text-xs text-[#f6b394] truncate" title={poolStats.poolId}>
+                    {poolStats.poolId}
+                  </p>
+                </div>
+                <div className="space-y-1 text-sm text-[#e6d4c7]">
+                  <p className="text-xs uppercase tracking-wide text-[#f6b394]/80">Reserves</p>
+                  <p>
+                    {poolStats.reserveA?.toFixed(6) ?? '0'} {poolStats.tokenA.symbol} / {poolStats.reserveB?.toFixed(6) ?? '0'} {poolStats.tokenB.symbol}
+                  </p>
+                  <p>LP Supply: {poolStats.lpSupply ?? 0}</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -202,16 +299,14 @@ export default function LiquidityPage() {
                 <p className="text-sm text-[#e6d4c7]">Deposit or withdraw shares</p>
               </div>
               <div className="rounded-full border border-[#f6b394]/40 bg-[#f6b394]/15 px-3 py-1 text-xs font-semibold text-[#f6b394]">
-                Pools
+                {loadingPools ? 'Syncing pools' : 'Pools'}
               </div>
             </div>
 
             <div className="flex rounded-xl border border-[#2d1b14] bg-[#1a1412] p-1">
               <button
                 className={`flex-1 rounded-lg py-2 text-center font-medium transition ${
-                  activeTab === 'add'
-                    ? 'bg-[#0f0d0d] text-[#f6b394] shadow'
-                    : 'text-[#e6d4c7]'
+                  activeTab === 'add' ? 'bg-[#0f0d0d] text-[#f6b394] shadow' : 'text-[#e6d4c7]'
                 }`}
                 onClick={() => setActiveTab('add')}
               >
@@ -219,9 +314,7 @@ export default function LiquidityPage() {
               </button>
               <button
                 className={`flex-1 rounded-lg py-2 text-center font-medium transition ${
-                  activeTab === 'remove'
-                    ? 'bg-[#0f0d0d] text-[#f6b394] shadow'
-                    : 'text-[#e6d4c7]'
+                  activeTab === 'remove' ? 'bg-[#0f0d0d] text-[#f6b394] shadow' : 'text-[#e6d4c7]'
                 }`}
                 onClick={() => setActiveTab('remove')}
               >
@@ -247,6 +340,15 @@ export default function LiquidityPage() {
                       title="Select Token A"
                     />
                   </div>
+                  <div className="mt-3">
+                    <label className="mb-1 block text-xs font-medium text-[#fbe5d5]">Coin Object ID (Token A)</label>
+                    <input
+                      value={coinAId}
+                      onChange={(e) => setCoinAId(e.target.value)}
+                      placeholder="0x..."
+                      className="w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-xs text-[#fbe5d5] shadow-inner shadow-black/30 focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
+                    />
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
@@ -263,6 +365,15 @@ export default function LiquidityPage() {
                       selectedToken={tokenB}
                       onSelectToken={setTokenB}
                       title="Select Token B"
+                    />
+                  </div>
+                  <div className="mt-3">
+                    <label className="mb-1 block text-xs font-medium text-[#fbe5d5]">Coin Object ID (Token B)</label>
+                    <input
+                      value={coinBId}
+                      onChange={(e) => setCoinBId(e.target.value)}
+                      placeholder="0x..."
+                      className="w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-xs text-[#fbe5d5] shadow-inner shadow-black/30 focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
                     />
                   </div>
                 </div>
@@ -301,9 +412,9 @@ export default function LiquidityPage() {
 
                 <button
                   onClick={handleAddLiquidity}
-                  disabled={!account || !amountA || !amountB || isLoading}
+                  disabled={!account || !amountA || !amountB || isLoading || !activePool}
                   className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
-                    !account || !amountA || !amountB || isLoading
+                    !account || !amountA || !amountB || isLoading || !activePool
                       ? 'bg-gray-300 cursor-not-allowed'
                       : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
                   }`}
@@ -331,6 +442,15 @@ export default function LiquidityPage() {
                     balance="0.00"
                     onMaxClick={() => setSharesToBurn('100')}
                   />
+                  <div className="mt-3">
+                    <label className="mb-1 block text-xs font-medium text-[#fbe5d5]">Position ID</label>
+                    <input
+                      value={positionId}
+                      onChange={(e) => setPositionId(e.target.value)}
+                      placeholder="0x..."
+                      className="w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-xs text-[#fbe5d5] shadow-inner shadow-black/30 focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -376,9 +496,9 @@ export default function LiquidityPage() {
 
                 <button
                   onClick={handleRemoveLiquidity}
-                  disabled={!account || !sharesToBurn || isLoading}
+                  disabled={!account || !sharesToBurn || isLoading || !activePool}
                   className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
-                    !account || !sharesToBurn || isLoading
+                    !account || !sharesToBurn || isLoading || !activePool
                       ? 'bg-gray-300 cursor-not-allowed'
                       : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
                   }`}

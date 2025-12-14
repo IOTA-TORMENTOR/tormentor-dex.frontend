@@ -1,35 +1,76 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useCurrentAccount, useSignAndExecuteTransaction, useIotaClient } from '@iota/dapp-kit';
+import { Transaction } from '@iota/iota-sdk/transactions';
+import { deriveTokensFromPools, getPools, hydratePoolsWithData, PoolWithOnChain } from '@/lib/pools';
+
+const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID ?? '';
+const PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
+
+function toBaseUnits(value: string, decimals = 0): number {
+  const parsed = parseFloat(value || '0');
+  if (Number.isNaN(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed * 10 ** decimals);
+}
 
 export default function ClaimFeesPage() {
   const [minA, setMinA] = useState('');
   const [minB, setMinB] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [pools, setPools] = useState<PoolWithOnChain[]>([]);
+  const [selectedPoolId, setSelectedPoolId] = useState('');
 
   const account = useCurrentAccount();
   const iotaClient = useIotaClient();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
 
+  useEffect(() => {
+    let mounted = true;
+    const loadPools = async () => {
+      try {
+        const meta = await getPools(iotaClient, REGISTRY_ID);
+        const hydrated = await hydratePoolsWithData(iotaClient, meta);
+        if (!mounted) return;
+        setPools(hydrated);
+        setSelectedPoolId((prev) => prev || hydrated[0]?.poolId || '');
+      } catch (error) {
+        console.error('Failed to load pools for fee claim', error);
+      }
+    };
+    loadPools();
+    return () => {
+      mounted = false;
+    };
+  }, [iotaClient]);
+
+  const activePool = useMemo(() => pools.find((p) => p.poolId === selectedPoolId) ?? pools[0], [pools, selectedPoolId]);
+  const tokens = deriveTokensFromPools(activePool ? [activePool] : []);
+  const tokenA = activePool?.tokenA ?? tokens[0];
+  const tokenB = activePool?.tokenB ?? tokens[1];
+
   const handleClaimFees = async () => {
-    if (!account) return;
+    if (!account || !activePool) return;
+    if (!REGISTRY_ID) {
+      alert('Set NEXT_PUBLIC_REGISTRY_ID in env');
+      return;
+    }
 
     setIsLoading(true);
 
     try {
-      // Dynamically import Transaction to use the same version as wallet-standard
-      const { Transaction } = await import('@iota/iota-sdk/transactions');
       const transaction = new Transaction();
+      const minABase = toBaseUnits(minA || '0', tokenA?.decimals ?? 0);
+      const minBBase = toBaseUnits(minB || '0', tokenB?.decimals ?? 0);
 
-      // This would be replaced with actual contract call
       transaction.moveCall({
-        target: `${process.env.NEXT_PUBLIC_PACKAGE_ID}::simple_amm::claim_protocol_fees`,
-        typeArguments: ['iota', 'usdc'], // These would be dynamic based on pool
+        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::claim_protocol_fees`,
+        typeArguments: [activePool.tokenA.tokenId, activePool.tokenB.tokenId],
         arguments: [
-          transaction.object('0x123'), // pool object ID - needs to be fetched
-          transaction.pure.u64(parseInt(minA || '0')),
-          transaction.pure.u64(parseInt(minB || '0')),
+          transaction.object(REGISTRY_ID),
+          transaction.object(activePool.poolId),
+          transaction.pure.u64(minABase),
+          transaction.pure.u64(minBBase),
         ],
       });
 
@@ -73,23 +114,51 @@ export default function ClaimFeesPage() {
           <p className="text-sm text-[#e6d4c7]">Withdraw accumulated protocol fees from your pools.</p>
         </div>
 
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
+            <label className="text-xs uppercase tracking-wide text-[#f6b394]">Select Pool</label>
+            <select
+              value={selectedPoolId}
+              onChange={(e) => setSelectedPoolId(e.target.value)}
+              className="mt-2 w-full rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-sm text-[#fbe5d5] focus:border-[#f6b394] focus:outline-none focus:ring-2 focus:ring-[#f6b394]/30"
+            >
+              {pools.map((pool) => (
+                <option key={pool.poolId} value={pool.poolId}>
+                  {pool.tokenA.symbol} / {pool.tokenB.symbol} ({pool.poolId.slice(0, 8)}...)
+                </option>
+              ))}
+              {!pools.length && <option>Pool fallback (set registry)</option>}
+            </select>
+          </div>
+          <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20 text-sm text-[#e6d4c7]">
+            <p className="text-xs uppercase tracking-wide text-[#f6b394]">Registry</p>
+            <p className="mt-1 font-mono text-xs text-[#fbe5d5] truncate" title={REGISTRY_ID || 'Not configured'}>
+              {REGISTRY_ID || 'Not set'}
+            </p>
+          </div>
+        </div>
+
         <div className="rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
           <p className="text-sm font-semibold text-[#f6b394]">Available Fees</p>
           <div className="mt-3 space-y-3">
             <div className="flex justify-between rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-[#fbe5d5]">
               <span>Token A Fees:</span>
-              <span className="font-semibold">0.000000 IOTA</span>
+              <span className="font-semibold">
+                {activePool?.protocolReserveA?.toFixed(6) ?? '0.000000'} {tokenA?.symbol ?? 'Token A'}
+              </span>
             </div>
             <div className="flex justify-between rounded-lg border border-[#2d1b14] bg-[#0f0d0d] px-3 py-2 text-[#fbe5d5]">
               <span>Token B Fees:</span>
-              <span className="font-semibold">0.000000 USDC</span>
+              <span className="font-semibold">
+                {activePool?.protocolReserveB?.toFixed(6) ?? '0.000000'} {tokenB?.symbol ?? 'Token B'}
+              </span>
             </div>
           </div>
         </div>
 
         <div className="space-y-4 rounded-2xl border border-[#2d1b14] bg-[#1a1412]/80 p-4 shadow-inner shadow-black/20">
           <div>
-            <label className="mb-2 block text-sm font-medium text-[#fbe5d5]">Minimum Token A to Receive</label>
+            <label className="mb-2 block text-sm font-medium text-[#fbe5d5]">Minimum {tokenA?.symbol ?? 'Token A'} to Receive</label>
             <input
               type="number"
               value={minA}
@@ -100,7 +169,7 @@ export default function ClaimFeesPage() {
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-[#fbe5d5]">Minimum Token B to Receive</label>
+            <label className="mb-2 block text-sm font-medium text-[#fbe5d5]">Minimum {tokenB?.symbol ?? 'Token B'} to Receive</label>
             <input
               type="number"
               value={minB}
@@ -116,22 +185,29 @@ export default function ClaimFeesPage() {
           <div className="space-y-2 text-sm text-[#e6d4c7]">
             <div className="flex justify-between">
               <span>Pool ID:</span>
-              <span className="font-mono">0x123...</span>
+              <span className="font-mono truncate max-w-40" title={activePool?.poolId || 'Not set'}>{activePool?.poolId || 'Not set'}</span>
             </div>
             <div className="flex justify-between">
               <span>Fee Recipient:</span>
-              <span className="font-mono truncate max-w-40">{account?.address || 'Not connected'}</span>
+              <span className="font-mono truncate max-w-40">{activePool?.feeRecipient || account?.address || 'Not connected'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Protocol Reserves:</span>
+              <span>
+                {activePool?.protocolReserveA?.toFixed(4) ?? 0} {tokenA?.symbol ?? ''} / {activePool?.protocolReserveB?.toFixed(4) ?? 0} {tokenB?.symbol ?? ''}
+              </span>
             </div>
           </div>
         </div>
 
         <button
           onClick={handleClaimFees}
-          disabled={!account || isLoading}
-          className={`w-full rounded-xl py-3 font-medium text-white transition-all ${!account || isLoading
-            ? 'bg-gray-300 cursor-not-allowed'
-            : 'bg-linear-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
-            }`}
+          disabled={!account || isLoading || !activePool}
+          className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
+            !account || isLoading || !activePool
+              ? 'bg-gray-300 cursor-not-allowed'
+              : 'bg-linear-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
+          }`}
         >
           {isLoading ? (
             <span className="flex items-center justify-center">

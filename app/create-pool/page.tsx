@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useCurrentAccount, useSignAndExecuteTransaction } from '@iota/dapp-kit';
+import { useEffect, useMemo, useState } from 'react';
+import { useCurrentAccount, useIotaClient, useSignAndExecuteTransaction } from '@iota/dapp-kit';
 import { Transaction } from '@iota/iota-sdk/transactions';
 import TokenSelector from '../components/TokenSelector';
 import TokenInput from '../components/TokenInput';
 import { listCoin } from '@/lib/constant';
-import { getPools } from '@/lib/pools';
+import { deriveTokensFromPools, getPools, hydratePoolsWithData } from '@/lib/pools';
 
 type TokenOption = {
   id: string;
@@ -15,6 +15,13 @@ type TokenOption = {
   decimals?: number;
   icon?: string;
 };
+
+const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID ?? '';
+const PACKAGE_ID = process.env.NEXT_PUBLIC_PACKAGE_ID ?? '0x0';
+
+function toBytesVector(str: string): number[] {
+  return Array.from(new TextEncoder().encode(str));
+}
 
 export default function CreatePoolPage() {
   const [tokens, setTokens] = useState<TokenOption[]>(
@@ -34,38 +41,69 @@ export default function CreatePoolPage() {
   const [isLoading, setIsLoading] = useState(false);
 
   const account = useCurrentAccount();
+  const iotaClient = useIotaClient();
   const { mutate: signAndExecuteTransaction } = useSignAndExecuteTransaction();
+
+  const hasSameToken = useMemo(() => tokenA.id === tokenB.id, [tokenA.id, tokenB.id]);
 
   // Load pools/token list (fallback to static)
   useEffect(() => {
-    getPools()
-      .then((coins) =>
+    let mounted = true;
+    const load = async () => {
+      try {
+        const poolMeta = await getPools(iotaClient, REGISTRY_ID);
+        const hydrated = await hydratePoolsWithData(iotaClient, poolMeta);
+        if (!mounted) return;
+        const derived = deriveTokensFromPools(hydrated);
         setTokens(
-          coins.map((coin) => ({
+          derived.map((coin) => ({
             id: coin.tokenId,
             symbol: coin.symbol,
             name: coin.symbol,
             decimals: coin.decimals,
             icon: coin.icon,
           }))
-        )
-      )
-      .catch((err) => console.error('Failed to load pools, using fallback listCoin', err));
-  }, []);
+        );
+      } catch (err) {
+        console.error('Failed to load token list, using fallback', err);
+      }
+    };
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [iotaClient]);
+
+  useEffect(() => {
+    if (!tokens.length) return;
+    setTokenA((prev) => tokens.find((t) => t.id === prev?.id) ?? tokens[0]);
+    setTokenB((prev) => tokens.find((t) => t.id === prev?.id) ?? tokens[1] ?? tokens[0]);
+  }, [tokens]);
 
   const handleCreatePool = async () => {
-    if (!account || !initialAmountA || !initialAmountB) return;
+    if (!account || !tokenA || !tokenB) return;
+    if (hasSameToken) {
+      alert('Token A dan B harus berbeda');
+      return;
+    }
+    if (!REGISTRY_ID) {
+      alert('Set NEXT_PUBLIC_REGISTRY_ID in env');
+      return;
+    }
 
     setIsLoading(true);
 
     try {
       const transaction = new Transaction();
 
-      // This would be replaced with actual contract call
       transaction.moveCall({
-        target: `${process.env.NEXT_PUBLIC_PACKAGE_ID}::simple_amm::create_pool`,
+        target: `${PACKAGE_ID}::simple_amm_sandbox_fee::create_pool`,
         typeArguments: [tokenA.id, tokenB.id],
-        arguments: [],
+        arguments: [
+          transaction.object(REGISTRY_ID),
+          transaction.pure.vector('u8', toBytesVector(tokenA.id)),
+          transaction.pure.vector('u8', toBytesVector(tokenB.id)),
+        ],
       });
 
       signAndExecuteTransaction(
@@ -114,8 +152,10 @@ export default function CreatePoolPage() {
                 </p>
               </div>
               <div className="rounded-2xl bg-gradient-to-br from-[#f6b394] via-[#e77a55] to-[#8a2d1b] px-4 py-3 text-black shadow-lg shadow-[#f6b394]/30">
-                <p className="text-xs uppercase tracking-wide opacity-80">Protocol Fees</p>
-                <p className="text-lg font-semibold">0.30% | 20% to protocol</p>
+                <p className="text-xs uppercase tracking-wide opacity-80">Registry</p>
+                <p className="text-sm font-semibold truncate max-w-[220px]" title={REGISTRY_ID || 'Not configured'}>
+                  {REGISTRY_ID || 'Not set'}
+                </p>
               </div>
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -199,18 +239,19 @@ export default function CreatePoolPage() {
                   <span>Initial Price</span>
                   <span>
                     {initialAmountA && initialAmountB
-                      ? `${(parseFloat(initialAmountB) / parseFloat(initialAmountA)).toFixed(6)} ${tokenB.symbol} / ${tokenA.symbol}`
+                      ? `${(parseFloat(initialAmountB) / parseFloat(initialAmountA || '1')).toFixed(6)} ${tokenB.symbol} / ${tokenA.symbol}`
                       : 'Waiting for amounts'}
                   </span>
                 </div>
+                {hasSameToken && <p className="text-xs text-red-300">Token A dan B harus berbeda.</p>}
               </div>
             </div>
 
             <button
               onClick={handleCreatePool}
-              disabled={!account || !initialAmountA || !initialAmountB || isLoading}
+              disabled={!account || !initialAmountA || !initialAmountB || isLoading || hasSameToken}
               className={`w-full rounded-xl py-3 font-medium text-white transition-all ${
-                !account || !initialAmountA || !initialAmountB || isLoading
+                !account || !initialAmountA || !initialAmountB || isLoading || hasSameToken
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-gradient-to-r from-[#f6b394] via-[#e77a55] to-[#8a2d1b] hover:shadow-lg hover:shadow-[#f6b394]/50'
               }`}

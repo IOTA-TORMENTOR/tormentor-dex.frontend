@@ -6,6 +6,11 @@ import Navigation from "./components/Navigation";
 export const metadata: Metadata = {
   title: "Tormentor DEX",
   description: "A decentralized exchange built on IOTA blockchain",
+  icons: {
+    icon: "/tormentor-icon.png",
+    shortcut: "/tormentor-icon.png",
+    apple: "/tormentor-icon.png",
+  },
 };
 
 export default function RootLayout({

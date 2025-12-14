@@ -6,6 +6,17 @@ const REGISTRY_ID = process.env.NEXT_PUBLIC_REGISTRY_ID;
 
 type AnyClient = Pick<IotaClient, 'getObject'> | null;
 
+export interface PoolWithOnChain extends PoolModel {
+  reserveA?: number;
+  reserveB?: number;
+  feeReserveA?: number;
+  feeReserveB?: number;
+  protocolReserveA?: number;
+  protocolReserveB?: number;
+  lpSupply?: number;
+  feeRecipient?: string;
+}
+
 type PoolFields = {
   token0?: unknown;
   token1?: unknown;
@@ -140,4 +151,71 @@ export function deriveTokensFromPools(pools: PoolModel[]): CoinModel[] {
   });
 
   return out.length ? out : listCoin;
+}
+
+function extractNumber(field: unknown): number {
+  if (typeof field === 'number') return field;
+  if (typeof field === 'string') return Number(field);
+  if (field && typeof field === 'object') {
+    if ('value' in (field as any) && typeof (field as any).value !== 'undefined') {
+      return Number((field as any).value);
+    }
+    if ('fields' in (field as any) && typeof (field as any).fields?.value !== 'undefined') {
+      return Number((field as any).fields?.value);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Hydrate pools with on-chain reserves/fee data. Gracefully ignores failures.
+ */
+export async function hydratePoolsWithData(client: AnyClient, pools: PoolModel[]): Promise<PoolWithOnChain[]> {
+  if (!client) return pools;
+
+  const results: PoolWithOnChain[] = [];
+
+  for (const pool of pools) {
+    try {
+      const resp = await client.getObject({
+        id: pool.poolId,
+        options: { showContent: true },
+      });
+
+      const fields = (resp as any)?.data?.content?.fields ?? (resp as any)?.content?.fields;
+      if (!fields) {
+        results.push(pool);
+        continue;
+      }
+
+      const reserveA = extractNumber(fields.reserve_a);
+      const reserveB = extractNumber(fields.reserve_b);
+      const feeReserveA = extractNumber(fields.fee_reserve_a);
+      const feeReserveB = extractNumber(fields.fee_reserve_b);
+      const protocolReserveA = extractNumber(fields.protocol_reserve_a);
+      const protocolReserveB = extractNumber(fields.protocol_reserve_b);
+      const lpSupply = extractNumber(fields.lp_supply);
+      const feeRecipient = typeof fields.fee_recipient === 'string' ? fields.fee_recipient : undefined;
+
+      const scaleA = pool.tokenA.decimals > 0 ? 10 ** pool.tokenA.decimals : 1;
+      const scaleB = pool.tokenB.decimals > 0 ? 10 ** pool.tokenB.decimals : 1;
+
+      results.push({
+        ...pool,
+        reserveA: reserveA / scaleA,
+        reserveB: reserveB / scaleB,
+        feeReserveA: feeReserveA / scaleA,
+        feeReserveB: feeReserveB / scaleB,
+        protocolReserveA: protocolReserveA / scaleA,
+        protocolReserveB: protocolReserveB / scaleB,
+        lpSupply,
+        feeRecipient,
+      });
+    } catch (error) {
+      console.error(`Failed to fetch pool ${pool.poolId}, keeping metadata only`, error);
+      results.push(pool);
+    }
+  }
+
+  return results;
 }
